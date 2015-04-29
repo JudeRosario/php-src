@@ -204,13 +204,6 @@ static const struct mb_overload_def mb_ovld[] = {
 	{MB_OVERLOAD_STRING, "strtolower", "mb_strtolower", "mb_orig_strtolower"},
 	{MB_OVERLOAD_STRING, "strtoupper", "mb_strtoupper", "mb_orig_strtoupper"},
 	{MB_OVERLOAD_STRING, "substr_count", "mb_substr_count", "mb_orig_substr_count"},
-#if HAVE_MBREGEX
-	{MB_OVERLOAD_REGEX, "ereg", "mb_ereg", "mb_orig_ereg"},
-	{MB_OVERLOAD_REGEX, "eregi", "mb_eregi", "mb_orig_eregi"},
-	{MB_OVERLOAD_REGEX, "ereg_replace", "mb_ereg_replace", "mb_orig_ereg_replace"},
-	{MB_OVERLOAD_REGEX, "eregi_replace", "mb_eregi_replace", "mb_orig_eregi_replace"},
-	{MB_OVERLOAD_REGEX, "split", "mb_split", "mb_orig_split"},
-#endif
 	{0, NULL, NULL, NULL}
 };
 /* }}} */
@@ -579,7 +572,7 @@ zend_module_entry mbstring_module_entry = {
 	PHP_RINIT(mbstring),
 	PHP_RSHUTDOWN(mbstring),
 	PHP_MINFO(mbstring),
-	NO_VERSION_YET,
+	PHP_MBSTRING_VERSION,
 	PHP_MODULE_GLOBALS(mbstring),
 	PHP_GINIT(mbstring),
 	PHP_GSHUTDOWN(mbstring),
@@ -1553,6 +1546,9 @@ static PHP_GSHUTDOWN_FUNCTION(mbstring)
 /* {{{ PHP_MINIT_FUNCTION(mbstring) */
 PHP_MINIT_FUNCTION(mbstring)
 {
+#if defined(COMPILE_DL_MBSTRING) && defined(ZTS)
+ZEND_TSRMLS_CACHE_UPDATE();
+#endif
 	__mbfl_allocators = &_php_mb_allocators;
 
 	REGISTER_INI_ENTRIES();
@@ -1720,6 +1716,13 @@ PHP_MINFO_FUNCTION(mbstring)
 		snprintf(tmp, sizeof(tmp), "%d.%d.%d", MBFL_VERSION_MAJOR, MBFL_VERSION_MINOR, MBFL_VERSION_TEENY);
 		php_info_print_table_row(2, "libmbfl version", tmp);
 	}
+#if HAVE_ONIG
+	{
+		char tmp[256];
+		snprintf(tmp, sizeof(tmp), "%d.%d.%d", ONIGURUMA_VERSION_MAJOR, ONIGURUMA_VERSION_MINOR, ONIGURUMA_VERSION_TEENY);
+		php_info_print_table_row(2, "oniguruma version", tmp);
+	}
+#endif
 	php_info_print_table_end();
 
 	php_info_print_table_start();

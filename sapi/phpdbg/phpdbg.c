@@ -1,6 +1,6 @@
 /*
    +----------------------------------------------------------------------+
-   | PHP Version 5                                                        |
+   | PHP Version 7                                                        |
    +----------------------------------------------------------------------+
    | Copyright (c) 1997-2015 The PHP Group                                |
    +----------------------------------------------------------------------+
@@ -32,6 +32,7 @@
 #include "phpdbg_io.h"
 #include "zend_alloc.h"
 #include "phpdbg_eol.h"
+#include "phpdbg_print.h"
 
 #include "ext/standard/basic_functions.h"
 
@@ -272,7 +273,7 @@ static PHP_FUNCTION(phpdbg_exec)
 	}
 
 	{
-		struct stat sb;
+		zend_stat_t sb;
 		zend_bool result = 1;
 
 		if (VCWD_STAT(exec->val, &sb) != FAILURE) {
@@ -761,6 +762,8 @@ const opt_struct OPTIONS[] = { /* {{{ */
 	{'a', 1, "address-or-any"},
 #endif
 	{'x', 0, "xml output"},
+	{'p', 2, "show opcodes"},
+	{'h', 0, "help"},
 	{'V', 0, "version"},
 	{'-', 0, NULL}
 }; /* }}} */
@@ -983,7 +986,14 @@ void *phpdbg_malloc_wrapper(size_t size) /* {{{ */
 
 void phpdbg_free_wrapper(void *p) /* {{{ */
 {
-	zend_mm_free(phpdbg_mm_get_heap(), p);
+	zend_mm_heap *heap = phpdbg_mm_get_heap();
+	if (UNEXPECTED(heap == p)) {
+		/* TODO: heap maybe allocated by mmap(zend_mm_init) or malloc(USE_ZEND_ALLOC=0) 
+		 * let's prevent it from segfault for now
+		 */
+	} else {
+		zend_mm_free(heap, p);
+	}
 } /* }}} */
 
 void *phpdbg_realloc_wrapper(void *ptr, size_t size) /* {{{ */
@@ -1020,6 +1030,7 @@ int main(int argc, char **argv) /* {{{ */
 	int server = -1;
 	int socket = -1;
 	FILE* stream = NULL;
+	char *print_opline_func;
 
 #ifdef ZTS
 	void ***tsrm_ls;
@@ -1181,7 +1192,7 @@ phpdbg_main:
 				if (sscanf(php_optarg, "%d", &listen) != 1) {
 					listen = 8000;
 				}
-				break;
+			break;
 
 			case 'a': { /* set bind address */
 				free(address);
@@ -1194,6 +1205,24 @@ phpdbg_main:
 			case 'x':
 				flags |= PHPDBG_WRITE_XML;
 			break;
+
+
+			case 'p': {
+				print_opline_func = php_optarg;
+				show_banner = 0;
+				settings = (void *) 0x1;
+			} break;
+
+			case 'h': {
+				sapi_startup(phpdbg);
+				phpdbg->startup(phpdbg);
+				PHPDBG_G(flags) = 0;
+				phpdbg_set_prompt(PHPDBG_DEFAULT_PROMPT);
+				phpdbg_do_help(NULL);
+				sapi_deactivate();
+				sapi_shutdown();
+				return 0;
+			} break;
 
 			case 'V': {
 				sapi_startup(phpdbg);
@@ -1211,6 +1240,8 @@ phpdbg_main:
 				return 0;
 			} break;
 		}
+
+		php_optarg = NULL;
 	}
 
 	/* set exec if present on command line */
@@ -1286,7 +1317,7 @@ phpdbg_main:
 		/* set flags from command line */
 		PHPDBG_G(flags) = flags;
 
-		if (settings) {
+		if (settings > (zend_phpdbg_globals *) 0x2) {
 #ifdef ZTS
 			*((zend_phpdbg_globals *) (*((void ***) tsrm_ls))[TSRM_UNSHUFFLE_RSRC_ID(phpdbg_globals_id)]) = *settings;
 #else
@@ -1487,6 +1518,15 @@ phpdbg_main:
 			} zend_end_try();
 
 			PHPDBG_G(flags) &= ~PHPDBG_DISCARD_OUTPUT;
+		}
+
+		if (settings == (void *) 0x1) {
+			if (PHPDBG_G(ops)) {
+				phpdbg_print_opcodes(print_opline_func);
+			} else {
+				write(PHPDBG_G(io)[PHPDBG_STDERR].fd, ZEND_STRL("No opcodes could be compiled | No file specified or compilation failed?\n"));
+			}
+			goto phpdbg_out;
 		}
 
 		/* step from here, not through init */

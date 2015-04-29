@@ -1056,7 +1056,7 @@ zend_module_entry gd_module_entry = {
 	NULL,
 #endif
 	PHP_MINFO(gd),
-	NO_VERSION_YET,
+	PHP_GD_VERSION,
 	STANDARD_MODULE_PROPERTIES
 };
 
@@ -2405,7 +2405,7 @@ static void _php_image_create_from(INTERNAL_FUNCTION_PARAMETERS, int image_type,
 #endif
 
 	if (image_type == PHP_GDIMG_TYPE_GD2PART) {
-		if (zend_parse_parameters(ZEND_NUM_ARGS(), "sllll", &file, &file_len, &srcx, &srcy, &width, &height) == FAILURE) {
+		if (zend_parse_parameters(ZEND_NUM_ARGS(), "pllll", &file, &file_len, &srcx, &srcy, &width, &height) == FAILURE) {
 			return;
 		}
 		if (width < 1 || height < 1) {
@@ -2413,7 +2413,7 @@ static void _php_image_create_from(INTERNAL_FUNCTION_PARAMETERS, int image_type,
 			RETURN_FALSE;
 		}
 	} else {
-		if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &file, &file_len) == FAILURE) {
+		if (zend_parse_parameters(ZEND_NUM_ARGS(), "p", &file, &file_len) == FAILURE) {
 			return;
 		}
 	}
@@ -2686,7 +2686,7 @@ static void _php_image_output(INTERNAL_FUNCTION_PARAMETERS, int image_type, char
 		int   b;
 		FILE *tmp;
 		char  buf[4096];
-		char *path;
+		zend_string *path;
 
 		tmp = php_open_temporary_file(NULL, NULL, &path);
 		if (tmp == NULL) {
@@ -2745,8 +2745,8 @@ static void _php_image_output(INTERNAL_FUNCTION_PARAMETERS, int image_type, char
 		}
 
 		fclose(tmp);
-		VCWD_UNLINK((const char *)path); /* make sure that the temporary file is removed */
-		efree(path);
+		VCWD_UNLINK((const char *)path->val); /* make sure that the temporary file is removed */
+		zend_string_release(path);
 	}
 	RETURN_TRUE;
 }
@@ -4155,7 +4155,7 @@ PHP_FUNCTION(imagepsencodefont)
 	size_t enc_len;
 	int *f_ind;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "rs", &fnt, &enc, &enc_len) == FAILURE) {
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "rp", &fnt, &enc, &enc_len) == FAILURE) {
 		return;
 	}
 

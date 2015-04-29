@@ -1,6 +1,6 @@
 /*
    +----------------------------------------------------------------------+
-   | PHP Version 5                                                        |
+   | PHP Version 7                                                        |
    +----------------------------------------------------------------------+
    | Copyright (c) 1997-2015 The PHP Group                                |
    +----------------------------------------------------------------------+
@@ -23,31 +23,19 @@
 #include "zend_compile.h"
 #include "phpdbg_opcode.h"
 #include "phpdbg_utils.h"
+#include "ext/standard/php_string.h"
 
 ZEND_EXTERN_MODULE_GLOBALS(phpdbg);
-
-static inline uint32_t phpdbg_decode_literal(zend_op_array *ops, zval *literal) /* {{{ */
-{
-	int iter = 0;
-
-	while (iter < ops->last_literal) {
-		if (literal == &ops->literals[iter]) {
-			return iter;
-		}
-		iter++;
-	}
-
-	return 0;
-} /* }}} */
 
 static inline char *phpdbg_decode_op(zend_op_array *ops, znode_op *op, uint32_t type, HashTable *vars) /* {{{ */
 {
 	char *decode = NULL;
 
 	switch (type &~ EXT_TYPE_UNUSED) {
-		case IS_CV:
-			asprintf(&decode, "$%s", ops->vars[EX_VAR_TO_NUM(op->var)]->val);
-		break;
+		case IS_CV: {
+			zend_string *var = ops->vars[EX_VAR_TO_NUM(op->var)];
+			asprintf(&decode, "$%.*s%c", var->len <= 19 ? (int) var->len : 18, var->val, var->len <= 19 ? 0 : '+');
+		} break;
 
 		case IS_VAR:
 		case IS_TMP_VAR: {
@@ -60,12 +48,62 @@ static inline char *phpdbg_decode_op(zend_op_array *ops, znode_op *op, uint32_t 
 					zend_hash_index_update_mem(vars, (zend_ulong) ops->vars - op->var, &id, sizeof(zend_ulong));
 				}
 			}
-			asprintf(&decode, "@%llu", id);
+			asprintf(&decode, "@" ZEND_ULONG_FMT, id);
 		} break;
 
-		case IS_CONST:
-			asprintf(&decode, "C%u", phpdbg_decode_literal(ops, RT_CONSTANT(ops, *op)));
-		break;
+		case IS_CONST: {
+			zval *literal = RT_CONSTANT(ops, *op);
+			switch (Z_TYPE_P(literal)) {
+				case IS_UNDEF:
+					decode = zend_strndup("", 0);
+					break;
+				case IS_NULL:
+					decode = zend_strndup(ZEND_STRL("null"));
+					break;
+				case IS_FALSE:
+					decode = zend_strndup(ZEND_STRL("false"));
+					break;
+				case IS_TRUE:
+					decode = zend_strndup(ZEND_STRL("true"));
+					break;
+				case IS_LONG:
+					asprintf(&decode, ZEND_ULONG_FMT, Z_LVAL_P(literal));
+					break;
+				case IS_DOUBLE:
+					asprintf(&decode, "%.*G", 14, Z_DVAL_P(literal));
+					break;
+				case IS_STRING: {
+					int i;
+					zend_string *str = php_addcslashes(Z_STR_P(literal), 0, "\\\"", 2);
+					for (i = 0; i < str->len; i++) {
+						if (str->val[i] < 32) {
+							str->val[i] = ' ';
+						}
+					}
+					asprintf(&decode, "\"%.*s\"%c", str->len <= 18 ? (int) str->len : 17, str->val, str->len <= 18 ? 0 : '+');
+					zend_string_release(str);
+					} break;
+				case IS_RESOURCE:
+					asprintf(&decode, "Rsrc #%d", Z_RES_HANDLE_P(literal));
+					break;
+				case IS_ARRAY:
+					asprintf(&decode, "array(%d)", zend_hash_num_elements(Z_ARR_P(literal)));
+					break;
+				case IS_OBJECT: {
+					zend_string *str = Z_OBJCE_P(literal)->name;
+					asprintf(&decode, "%.*s%c", str->len <= 18 ? (int) str->len : 18, str->val, str->len <= 18 ? 0 : '+');
+					} break;
+				case IS_CONSTANT:
+					decode = zend_strndup(ZEND_STRL("<constant>"));
+					break;
+				case IS_CONSTANT_AST:
+					decode = zend_strndup(ZEND_STRL("<ast>"));
+					break;
+				default:
+					asprintf(&decode, "unknown type: %d", Z_TYPE_P(literal));
+					break;
+			}
+		} break;
 
 		case IS_UNUSED:
 			asprintf(&decode, "<unused>");
@@ -80,47 +118,39 @@ char *phpdbg_decode_opline(zend_op_array *ops, zend_op *op, HashTable *vars) /*{
 
 	switch (op->opcode) {
 	case ZEND_JMP:
-#ifdef ZEND_GOTO
 	case ZEND_GOTO:
-#endif
-#ifdef ZEND_FAST_CALL
 	case ZEND_FAST_CALL:
-#endif
-			asprintf(&decode[1], "J%ld", OP_JMP_ADDR(op, op->op1) - ops->opcodes);
+		asprintf(&decode[1], "J%ld", OP_JMP_ADDR(op, op->op1) - ops->opcodes);
 		goto format;
 
 	case ZEND_JMPZNZ:
-			decode[1] = phpdbg_decode_op(ops, &op->op1, op->op1_type, vars);
-			asprintf(&decode[2], "J%u or J%llu", op->op2.opline_num, op->extended_value);
+		decode[1] = phpdbg_decode_op(ops, &op->op1, op->op1_type, vars);
+		asprintf(&decode[2], "J%u or J%" PRIu32, op->op2.opline_num, op->extended_value);
 		goto result;
 
 	case ZEND_JMPZ:
 	case ZEND_JMPNZ:
 	case ZEND_JMPZ_EX:
 	case ZEND_JMPNZ_EX:
-
-#ifdef ZEND_JMP_SET
 	case ZEND_JMP_SET:
-#endif
 		decode[1] = phpdbg_decode_op(ops, &op->op1, op->op1_type, vars);
 		asprintf(&decode[2], "J%ld", OP_JMP_ADDR(op, op->op2) - ops->opcodes);
-	goto result;
+		goto result;
 
 	case ZEND_RECV_INIT:
 		goto result;
 
-		default: {
-			decode[1] = phpdbg_decode_op(ops, &op->op1, op->op1_type, vars);
-			decode[2] = phpdbg_decode_op(ops, &op->op2, op->op2_type, vars);
+	default:
+		decode[1] = phpdbg_decode_op(ops, &op->op1, op->op1_type, vars);
+		decode[2] = phpdbg_decode_op(ops, &op->op2, op->op2_type, vars);
 result:
-			decode[3] = phpdbg_decode_op(ops, &op->result, op->result_type, vars);
+		decode[3] = phpdbg_decode_op(ops, &op->result, op->result_type, vars);
 format:
-			asprintf(&decode[0],
-				"%-20s %-20s %-20s",
-				decode[1] ? decode[1] : "",
-				decode[2] ? decode[2] : "",
-				decode[3] ? decode[3] : "");
-		}
+		asprintf(&decode[0],
+			"%-20s %-20s %-20s",
+			decode[1] ? decode[1] : "",
+			decode[2] ? decode[2] : "",
+			decode[3] ? decode[3] : "");
 	}
 
 	if (decode[1])

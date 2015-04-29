@@ -482,7 +482,6 @@ ZEND_API int zend_multibyte_set_filter(const zend_encoding *onetime_encoding)
 
 ZEND_API int open_file_for_scanning(zend_file_handle *file_handle)
 {
-	const char *file_path = NULL;
 	char *buf;
 	size_t size, offset = 0;
 	zend_string *compiled_filename;
@@ -536,12 +535,11 @@ ZEND_API int open_file_for_scanning(zend_file_handle *file_handle)
 	BEGIN(INITIAL);
 
 	if (file_handle->opened_path) {
-		file_path = file_handle->opened_path;
+		compiled_filename = zend_string_copy(file_handle->opened_path);
 	} else {
-		file_path = file_handle->filename;
+		compiled_filename = zend_string_init(file_handle->filename, strlen(file_handle->filename), 0);
 	}
 
-	compiled_filename = zend_string_init(file_path, strlen(file_path), 0);
 	zend_set_compiled_filename(compiled_filename);
 	zend_string_release(compiled_filename);
 
@@ -562,15 +560,7 @@ END_EXTERN_C()
 ZEND_API zend_op_array *compile_file(zend_file_handle *file_handle, int type)
 {
 	zend_lex_state original_lex_state;
-	zend_op_array *op_array = (zend_op_array *) emalloc(sizeof(zend_op_array));
-	zend_op_array *original_active_op_array = CG(active_op_array);
-	int compiler_result;
-	zend_bool compilation_successful=0;
-	zval retval_zv;
-	zend_bool original_in_compilation = CG(in_compilation);
-
-	ZVAL_LONG(&retval_zv, 1);
-
+	zend_op_array *op_array = NULL;
 	zend_save_lexical_state(&original_lex_state);
 
 	if (open_file_for_scanning(file_handle)==FAILURE) {
@@ -580,37 +570,42 @@ ZEND_API zend_op_array *compile_file(zend_file_handle *file_handle, int type)
 		} else {
 			zend_message_dispatcher(ZMSG_FAILED_INCLUDE_FOPEN, file_handle->filename);
 		}
-		compilation_successful=0;
 	} else {
-		init_op_array(op_array, ZEND_USER_FUNCTION, INITIAL_OP_ARRAY_SIZE);
+		zend_bool original_in_compilation = CG(in_compilation);
 		CG(in_compilation) = 1;
-		CG(active_op_array) = op_array;
-		zend_stack_push(&CG(context_stack), (void *) &CG(context));
-		zend_init_compiler_context();
+
+		CG(ast) = NULL;
 		CG(ast_arena) = zend_arena_create(1024 * 32);
-		compiler_result = zendparse();
-		if (compiler_result != 0) { /* parser error */
-			zend_bailout();
+		if (!zendparse()) {
+			zval retval_zv;
+			zend_file_context original_file_context;
+			zend_oparray_context original_oparray_context;
+			zend_op_array *original_active_op_array = CG(active_op_array);
+			op_array = emalloc(sizeof(zend_op_array));
+			init_op_array(op_array, ZEND_USER_FUNCTION, INITIAL_OP_ARRAY_SIZE);
+			CG(active_op_array) = op_array;
+			ZVAL_LONG(&retval_zv, 1);
+
+			if (zend_ast_process) {
+				zend_ast_process(CG(ast));
+			}
+
+			zend_file_context_begin(&original_file_context);
+			zend_oparray_context_begin(&original_oparray_context);
+			zend_compile_top_stmt(CG(ast));
+			zend_emit_final_return(&retval_zv);
+			op_array->line_start = 1;
+			op_array->line_end = CG(zend_lineno);
+			pass_two(op_array);
+			zend_oparray_context_end(&original_oparray_context);
+			zend_file_context_end(&original_file_context);
+
+			CG(active_op_array) = original_active_op_array;
 		}
-		if (zend_ast_process) {
-			zend_ast_process(CG(ast));
-		}
-		zend_compile_top_stmt(CG(ast));
+
 		zend_ast_destroy(CG(ast));
 		zend_arena_destroy(CG(ast_arena));
-		zend_do_end_compilation();
-		zend_emit_final_return(&retval_zv);
 		CG(in_compilation) = original_in_compilation;
-		compilation_successful=1;
-	}
-
-	CG(active_op_array) = original_active_op_array;
-	if (compilation_successful) {
-		pass_two(op_array);
-		zend_release_labels(0);
-	} else {
-		efree_size(op_array, sizeof(zend_op_array));
-		op_array = NULL;
 	}
 
 	zend_restore_lexical_state(&original_lex_state);
@@ -623,7 +618,7 @@ zend_op_array *compile_filename(int type, zval *filename)
 	zend_file_handle file_handle;
 	zval tmp;
 	zend_op_array *retval;
-	char *opened_path = NULL;
+	zend_string *opened_path = NULL;
 
 	if (Z_TYPE_P(filename) != IS_STRING) {
 		tmp = *filename;
@@ -640,13 +635,13 @@ zend_op_array *compile_filename(int type, zval *filename)
 	retval = zend_compile_file(&file_handle, type);
 	if (retval && file_handle.handle.stream.handle) {
 		if (!file_handle.opened_path) {
-			file_handle.opened_path = opened_path = estrndup(Z_STRVAL_P(filename), Z_STRLEN_P(filename));
+			file_handle.opened_path = opened_path = zend_string_copy(Z_STR_P(filename));
 		}
 
-		zend_hash_str_add_empty_element(&EG(included_files), file_handle.opened_path, strlen(file_handle.opened_path));
+		zend_hash_add_empty_element(&EG(included_files), file_handle.opened_path);
 
 		if (opened_path) {
-			efree(opened_path);
+			zend_string_release(opened_path);
 		}
 	}
 	zend_destroy_file_handle(&file_handle);
@@ -665,7 +660,7 @@ ZEND_API int zend_prepare_string_for_scanning(zval *str, char *filename)
 
 	/* enforce ZEND_MMAP_AHEAD trailing NULLs for flex... */
 	old_len = Z_STRLEN_P(str);
-	Z_STR_P(str) = zend_string_realloc(Z_STR_P(str), old_len + ZEND_MMAP_AHEAD, 0);
+	Z_STR_P(str) = zend_string_extend(Z_STR_P(str), old_len + ZEND_MMAP_AHEAD, 0);
 	Z_TYPE_INFO_P(str) = IS_STRING_EX;
 	memset(Z_STRVAL_P(str) + old_len, 0, ZEND_MMAP_AHEAD + 1);
 
@@ -749,21 +744,26 @@ zend_op_array *compile_string(zval *source_string, char *filename)
 		BEGIN(ST_IN_SCRIPTING);
 
 		if (!zendparse()) {
+			zend_file_context original_file_context;
+			zend_oparray_context original_oparray_context;
 			zend_op_array *original_active_op_array = CG(active_op_array);
 			op_array = emalloc(sizeof(zend_op_array));
 			init_op_array(op_array, ZEND_EVAL_CODE, INITIAL_OP_ARRAY_SIZE);
 			CG(active_op_array) = op_array;
 
-			zend_stack_push(&CG(context_stack), (void *) &CG(context));
-			zend_init_compiler_context();
 			if (zend_ast_process) {
 				zend_ast_process(CG(ast));
 			}
+
+			zend_file_context_begin(&original_file_context);
+			zend_oparray_context_begin(&original_oparray_context);
 			zend_compile_top_stmt(CG(ast));
-			zend_do_end_compilation();
 			zend_emit_final_return(NULL);
+			op_array->line_start = 1;
+			op_array->line_end = CG(zend_lineno);
 			pass_two(op_array);
-			zend_release_labels(0);
+			zend_oparray_context_end(&original_oparray_context);
+			zend_file_context_end(&original_file_context);
 
 			CG(active_op_array) = original_active_op_array;
 		}
@@ -875,7 +875,7 @@ ZEND_API void zend_multibyte_yyinput_again(zend_encoding_filter old_input_filter
 		ZVAL_STRINGL(zendlval, yytext, yyleng); \
 	}
 
-static void zend_scan_escape_string(zval *zendlval, char *str, int len, char quote_type)
+static int zend_scan_escape_string(zval *zendlval, char *str, int len, char quote_type)
 {
 	register char *s, *t;
 	char *end;
@@ -996,7 +996,10 @@ static void zend_scan_escape_string(zval *zendlval, char *str, int len, char quo
 						}
 
 						if (!valid) {
-							zend_error(E_COMPILE_ERROR, "Invalid UTF-8 codepoint escape sequence");
+							zend_throw_exception(zend_get_parse_exception(),
+								"Invalid UTF-8 codepoint escape sequence", E_PARSE);
+							zval_ptr_dtor(zendlval);
+							return FAILURE;
 						}
 
 						errno = 0;
@@ -1004,7 +1007,10 @@ static void zend_scan_escape_string(zval *zendlval, char *str, int len, char quo
 
 						/* per RFC 3629, UTF-8 can only represent 21 bits */
 						if (codepoint > 0x10FFFF || errno) {
-							zend_error_noreturn(E_COMPILE_ERROR, "Invalid UTF-8 codepoint escape sequence: Codepoint too large");
+							zend_throw_exception(zend_get_parse_exception(),
+								"Invalid UTF-8 codepoint escape sequence: Codepoint too large", E_PARSE);
+							zval_ptr_dtor(zendlval);
+							return FAILURE;
 						}
 
 						/* based on https://en.wikipedia.org/wiki/UTF-8#Sample_code */
@@ -1074,6 +1080,7 @@ static void zend_scan_escape_string(zval *zendlval, char *str, int len, char quo
 		ZVAL_STRINGL(zendlval, (char *) str, sz);
 		efree(str);
 	}
+	return SUCCESS;
 }
 
 
@@ -1117,6 +1124,10 @@ NEWLINE ("\r"|"\n"|"\r\n")
 
 <ST_IN_SCRIPTING>"return" {
 	return T_RETURN;
+}
+
+<ST_IN_SCRIPTING>"yield"{WHITESPACE}"from" {
+	return T_YIELD_FROM;
 }
 
 <ST_IN_SCRIPTING>"yield" {
@@ -1624,9 +1635,9 @@ NEWLINE ("\r"|"\n"|"\r\n")
 		 * Because the lexing itself doesn't do that for us
 		 */
 		if (end != yytext + yyleng) {
-			zend_error_noreturn(E_COMPILE_ERROR, "Invalid numeric literal");
+			zend_throw_exception(zend_get_parse_exception(), "Invalid numeric literal", E_PARSE);
+			return T_ERROR;
 		}
-		ZEND_ASSERT(!errno);
 	} else {
 		errno = 0;
 		ZVAL_LONG(zendlval, ZEND_STRTOL(yytext, &end, 0));
@@ -1640,17 +1651,20 @@ NEWLINE ("\r"|"\n"|"\r\n")
 			}
 			/* Also not an assert for the same reason */
 			if (end != yytext + yyleng) {
-				zend_error_noreturn(E_COMPILE_ERROR, "Invalid numeric literal");
+				zend_throw_exception(zend_get_parse_exception(),
+					"Invalid numeric literal", E_PARSE);
+				return T_ERROR;
 			}
 			ZEND_ASSERT(!errno);
 			return T_DNUMBER;
 		}
 		/* Also not an assert for the same reason */
 		if (end != yytext + yyleng) {
-			zend_error_noreturn(E_COMPILE_ERROR, "Invalid numeric literal");
+			zend_throw_exception(zend_get_parse_exception(), "Invalid numeric literal", E_PARSE);
+			return T_ERROR;
 		}
-		ZEND_ASSERT(!errno);
 	}
+	ZEND_ASSERT(!errno);
 	return T_LNUMBER;
 }
 
@@ -2005,7 +2019,9 @@ inline_char_handler:
 		switch (*YYCURSOR++) {
 			case '"':
 				yyleng = YYCURSOR - SCNG(yy_text);
-				zend_scan_escape_string(zendlval, yytext+bprefix+1, yyleng-bprefix-2, '"');
+				if (zend_scan_escape_string(zendlval, yytext+bprefix+1, yyleng-bprefix-2, '"') == FAILURE) {
+					return T_ERROR;
+				}
 				return T_CONSTANT_ENCAPSED_STRING;
 			case '$':
 				if (IS_LABEL_START(*YYCURSOR) || *YYCURSOR == '{') {
@@ -2172,7 +2188,9 @@ inline_char_handler:
 double_quotes_scan_done:
 	yyleng = YYCURSOR - SCNG(yy_text);
 
-	zend_scan_escape_string(zendlval, yytext, yyleng, '"');
+	if (zend_scan_escape_string(zendlval, yytext, yyleng, '"') == FAILURE) {
+		return T_ERROR;
+	}
 	return T_ENCAPSED_AND_WHITESPACE;
 }
 
@@ -2214,7 +2232,9 @@ double_quotes_scan_done:
 
 	yyleng = YYCURSOR - SCNG(yy_text);
 
-	zend_scan_escape_string(zendlval, yytext, yyleng, '`');
+	if (zend_scan_escape_string(zendlval, yytext, yyleng, '`') == FAILURE) {
+		return T_ERROR;
+	}
 	return T_ENCAPSED_AND_WHITESPACE;
 }
 
@@ -2288,7 +2308,9 @@ double_quotes_scan_done:
 heredoc_scan_done:
 	yyleng = YYCURSOR - SCNG(yy_text);
 
-	zend_scan_escape_string(zendlval, yytext, yyleng - newline, 0);
+	if (zend_scan_escape_string(zendlval, yytext, yyleng - newline, 0) == FAILURE) {
+		return T_ERROR;
+	}
 	return T_ENCAPSED_AND_WHITESPACE;
 }
 

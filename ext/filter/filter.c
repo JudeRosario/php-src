@@ -137,9 +137,7 @@ static const zend_function_entry filter_functions[] = {
 /* {{{ filter_module_entry
  */
 zend_module_entry filter_module_entry = {
-#if ZEND_MODULE_API_NO >= 20010901
 	STANDARD_MODULE_HEADER,
-#endif
 	"filter",
 	filter_functions,
 	PHP_MINIT(filter),
@@ -147,7 +145,7 @@ zend_module_entry filter_module_entry = {
 	NULL,
 	PHP_RSHUTDOWN(filter),
 	PHP_MINFO(filter),
-	"0.11.0",
+	PHP_FILTER_VERSION,
 	STANDARD_MODULE_PROPERTIES
 };
 /* }}} */
@@ -390,6 +388,7 @@ static void php_zval_filter(zval *value, zend_long filter, zend_long flags, zval
 
 		ce = Z_OBJCE_P(value);
 		if (!ce->__tostring) {
+			zval_ptr_dtor(value);
 			ZVAL_FALSE(value);
 			return;
 		}
@@ -800,7 +799,7 @@ PHP_FUNCTION(filter_input_array)
 		return;
 	}
 
-	if (op && (Z_TYPE_P(op) != IS_ARRAY) && (Z_TYPE_P(op) == IS_LONG && !PHP_FILTER_ID_EXISTS(Z_LVAL_P(op)))) {
+	if (op && (Z_TYPE_P(op) != IS_ARRAY) && !(Z_TYPE_P(op) == IS_LONG && PHP_FILTER_ID_EXISTS(Z_LVAL_P(op)))) {
 		RETURN_FALSE;
 	}
 
@@ -845,7 +844,7 @@ PHP_FUNCTION(filter_var_array)
 		return;
 	}
 
-	if (op && (Z_TYPE_P(op) != IS_ARRAY) && (Z_TYPE_P(op) == IS_LONG && !PHP_FILTER_ID_EXISTS(Z_LVAL_P(op)))) {
+	if (op && (Z_TYPE_P(op) != IS_ARRAY) && !(Z_TYPE_P(op) == IS_LONG && PHP_FILTER_ID_EXISTS(Z_LVAL_P(op)))) {
 		RETURN_FALSE;
 	}
 

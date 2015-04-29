@@ -802,7 +802,7 @@ PHP_FUNCTION(tempnam)
 {
 	char *dir, *prefix;
 	size_t dir_len, prefix_len;
-	char *opened_path;
+	zend_string *opened_path;
 	int fd;
 	zend_string *p;
 
@@ -823,9 +823,7 @@ PHP_FUNCTION(tempnam)
 
 	if ((fd = php_open_temporary_fd_ex(dir, p->val, &opened_path, 1)) >= 0) {
 		close(fd);
-		// TODO: avoid reallocation ???
-		RETVAL_STRING(opened_path);
-		efree(opened_path);
+		RETVAL_STR(opened_path);
 	}
 	zend_string_release(p);
 }
@@ -902,11 +900,9 @@ PHPAPI PHP_FUNCTION(fclose)
 		RETURN_FALSE;
 	}
 
-	if (!stream->is_persistent) {
-		php_stream_close(stream);
-	} else {
-		php_stream_pclose(stream);
-	}
+	php_stream_free(stream,
+		PHP_STREAM_FREE_KEEP_RSRC |
+		(stream->is_persistent ? PHP_STREAM_FREE_CLOSE_PERSISTENT : PHP_STREAM_FREE_CLOSE));
 
 	RETURN_TRUE;
 }
@@ -1667,7 +1663,7 @@ PHPAPI int php_copy_file(const char *src, const char *dest)
  */
 PHPAPI int php_copy_file_ex(const char *src, const char *dest, int src_flg)
 {
-	return php_copy_file_ctx(src, dest, 0, NULL);
+	return php_copy_file_ctx(src, dest, src_flg, NULL);
 }
 /* }}} */
 

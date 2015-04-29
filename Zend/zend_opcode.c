@@ -51,6 +51,9 @@ static void op_array_alloc_ops(zend_op_array *op_array, uint32_t size)
 void init_op_array(zend_op_array *op_array, zend_uchar type, int initial_ops_size)
 {
 	op_array->type = type;
+	op_array->arg_flags[0] = 0;
+	op_array->arg_flags[1] = 0;
+	op_array->arg_flags[2] = 0;
 
 	op_array->refcount = (uint32_t *) emalloc(sizeof(uint32_t));
 	*op_array->refcount = 1;
@@ -117,7 +120,6 @@ ZEND_API void zend_function_dtor(zval *zv)
 		ZEND_ASSERT(function->common.function_name);
 		destroy_op_array(&function->op_array);
 		/* op_arrays are allocated on arena, so we don't have to free them */
-//???		efree_size(function, sizeof(zend_op_array));
 	} else {
 		ZEND_ASSERT(function->type == ZEND_INTERNAL_FUNCTION);
 		ZEND_ASSERT(function->common.function_name);
@@ -152,13 +154,15 @@ ZEND_API void zend_cleanup_user_class_data(zend_class_entry *ce)
 	}
 	if (ce->static_members_table) {
 		zval *static_members = ce->static_members_table;
-		int count = ce->default_static_members_count;
-		int i;
+		zval *p = static_members;
+		zval *end = p + ce->default_static_members_count;
+
 
 		ce->default_static_members_count = 0;
 		ce->default_static_members_table = ce->static_members_table = NULL;
-		for (i = 0; i < count; i++) {
-			zval_ptr_dtor(&static_members[i]);
+		while (p != end) {
+			i_zval_ptr_dtor(p ZEND_FILE_LINE_CC);
+			p++;
 		}
 		efree(static_members);
 	}
@@ -168,15 +172,17 @@ ZEND_API void zend_cleanup_internal_class_data(zend_class_entry *ce)
 {
 	if (CE_STATIC_MEMBERS(ce)) {
 		zval *static_members = CE_STATIC_MEMBERS(ce);
-		int i;
+		zval *p = static_members;
+		zval *end = p + ce->default_static_members_count;
 
 #ifdef ZTS
 		CG(static_members_table)[(zend_intptr_t)(ce->static_members_table)] = NULL;
 #else
 		ce->static_members_table = NULL;
 #endif
-		for (i = 0; i < ce->default_static_members_count; i++) {
-			zval_ptr_dtor(&static_members[i]);
+		while (p != end) {
+			i_zval_ptr_dtor(p ZEND_FILE_LINE_CC);
+			p++;
 		}
 		efree(static_members);
 	}
@@ -221,9 +227,14 @@ void _destroy_zend_class_traits_info(zend_class_entry *ce)
 			efree(ce->trait_precedences[i]->trait_method);
 
 			if (ce->trait_precedences[i]->exclude_from_classes) {
+				size_t j = 0;
+				zend_trait_precedence *cur_precedence = ce->trait_precedences[i];
+				while (cur_precedence->exclude_from_classes[j].class_name) {
+					zend_string_release(cur_precedence->exclude_from_classes[j].class_name);
+					j++;
+				}
 				efree(ce->trait_precedences[i]->exclude_from_classes);
 			}
-
 			efree(ce->trait_precedences[i]);
 			i++;
 		}
@@ -233,6 +244,7 @@ void _destroy_zend_class_traits_info(zend_class_entry *ce)
 
 ZEND_API void destroy_zend_class(zval *zv)
 {
+	zend_property_info *prop_info;
 	zend_class_entry *ce = Z_PTR_P(zv);
 
 	if (--ce->refcount > 0) {
@@ -241,25 +253,33 @@ ZEND_API void destroy_zend_class(zval *zv)
 	switch (ce->type) {
 		case ZEND_USER_CLASS:
 			if (ce->default_properties_table) {
-				int i;
+				zval *p = ce->default_properties_table;
+				zval *end = p + ce->default_properties_count;
 
-				for (i = 0; i < ce->default_properties_count; i++) {
-					if (Z_TYPE(ce->default_properties_table[i]) != IS_UNDEF) {
-						zval_ptr_dtor(&ce->default_properties_table[i]);
-				    }
+				while (p != end) {
+					i_zval_ptr_dtor(p ZEND_FILE_LINE_CC);
+					p++;
 				}
 				efree(ce->default_properties_table);
 			}
 			if (ce->default_static_members_table) {
-				int i;
+				zval *p = ce->default_static_members_table;
+				zval *end = p + ce->default_static_members_count;
 
-				for (i = 0; i < ce->default_static_members_count; i++) {
-					if (Z_TYPE(ce->default_static_members_table[i]) != IS_UNDEF) {
-						zval_ptr_dtor(&ce->default_static_members_table[i]);
-					}
+				while (p != end) {
+					i_zval_ptr_dtor(p ZEND_FILE_LINE_CC);
+					p++;
 				}
 				efree(ce->default_static_members_table);
 			}
+			ZEND_HASH_FOREACH_PTR(&ce->properties_info, prop_info) {
+				if (prop_info->ce == ce || (prop_info->flags & ZEND_ACC_SHADOW)) {
+					zend_string_release(prop_info->name);
+					if (prop_info->doc_comment) {
+						zend_string_release(prop_info->doc_comment);
+					}
+				}
+			} ZEND_HASH_FOREACH_END();
 			zend_hash_destroy(&ce->properties_info);
 			zend_string_release(ce->name);
 			zend_hash_destroy(&ce->function_table);
@@ -276,20 +296,22 @@ ZEND_API void destroy_zend_class(zval *zv)
 			break;
 		case ZEND_INTERNAL_CLASS:
 			if (ce->default_properties_table) {
-				int i;
+				zval *p = ce->default_properties_table;
+				zval *end = p + ce->default_properties_count;
 
-				for (i = 0; i < ce->default_properties_count; i++) {
-					if (Z_TYPE(ce->default_properties_table[i]) != IS_UNDEF) {
-						zval_internal_ptr_dtor(&ce->default_properties_table[i]);
-					}
+				while (p != end) {
+					zval_internal_ptr_dtor(p);
+					p++;
 				}
 				free(ce->default_properties_table);
 			}
 			if (ce->default_static_members_table) {
-				int i;
+				zval *p = ce->default_static_members_table;
+				zval *end = p + ce->default_static_members_count;
 
-				for (i = 0; i < ce->default_static_members_count; i++) {
-					zval_internal_ptr_dtor(&ce->default_static_members_table[i]);
+				while (p != end) {
+					zval_internal_ptr_dtor(p);
+					p++;
 				}
 				free(ce->default_static_members_table);
 			}
@@ -745,6 +767,9 @@ ZEND_API int pass_two(zend_op_array *op_array)
 			opline->result.var = (uint32_t)(zend_intptr_t)ZEND_CALL_VAR_NUM(NULL, op_array->last_var + opline->result.var);
 		}
 		switch (opline->opcode) {
+			case ZEND_DECLARE_ANON_INHERITED_CLASS:
+				ZEND_PASS_TWO_UPDATE_JMP_TARGET(op_array, opline, opline->op1);
+				/* break omitted intentionally */
 			case ZEND_DECLARE_INHERITED_CLASS:
 			case ZEND_DECLARE_INHERITED_CLASS_DELAYED:
 				opline->extended_value = (uint32_t)(zend_intptr_t)ZEND_CALL_VAR_NUM(NULL, op_array->last_var + opline->extended_value);
@@ -756,6 +781,7 @@ ZEND_API int pass_two(zend_op_array *op_array)
 				/* break omitted intentionally */
 			case ZEND_JMP:
 			case ZEND_FAST_CALL:
+			case ZEND_DECLARE_ANON_CLASS:
 				ZEND_PASS_TWO_UPDATE_JMP_TARGET(op_array, opline, opline->op1);
 				break;
 			case ZEND_JMPZNZ:
@@ -784,11 +810,6 @@ ZEND_API int pass_two(zend_op_array *op_array)
 			case ZEND_RETURN:
 			case ZEND_RETURN_BY_REF:
 				if (op_array->fn_flags & ZEND_ACC_GENERATOR) {
-					if (opline->op1_type != IS_CONST || Z_TYPE_P(RT_CONSTANT(op_array, opline->op1)) != IS_NULL) {
-						CG(zend_lineno) = opline->lineno;
-						zend_error_noreturn(E_COMPILE_ERROR, "Generators cannot return values using \"return\"");
-					}
-
 					opline->opcode = ZEND_GENERATOR_RETURN;
 				}
 				break;
@@ -852,6 +873,7 @@ ZEND_API binary_op_type get_binary_op(int opcode)
 		case ZEND_SR:
 		case ZEND_ASSIGN_SR:
 			return (binary_op_type) shift_right_function;
+		case ZEND_FAST_CONCAT:
 		case ZEND_CONCAT:
 		case ZEND_ASSIGN_CONCAT:
 			return (binary_op_type) concat_function;

@@ -685,6 +685,9 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_error_get_last, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_error_clear_last, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_call_user_func, 0, 0, 1)
 	ZEND_ARG_INFO(0, function_name)
 	ZEND_ARG_VARIADIC_INFO(0, parameters)
@@ -1448,7 +1451,7 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_htmlspecialchars, 0, 0, 1)
 	ZEND_ARG_INFO(0, string)
 	ZEND_ARG_INFO(0, quote_style)
-	ZEND_ARG_INFO(0, charset)
+	ZEND_ARG_INFO(0, encoding)
 	ZEND_ARG_INFO(0, double_encode)
 ZEND_END_ARG_INFO()
 
@@ -1460,19 +1463,20 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_html_entity_decode, 0, 0, 1)
 	ZEND_ARG_INFO(0, string)
 	ZEND_ARG_INFO(0, quote_style)
-	ZEND_ARG_INFO(0, charset)
+	ZEND_ARG_INFO(0, encoding)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_htmlentities, 0, 0, 1)
 	ZEND_ARG_INFO(0, string)
 	ZEND_ARG_INFO(0, quote_style)
-	ZEND_ARG_INFO(0, charset)
+	ZEND_ARG_INFO(0, encoding)
 	ZEND_ARG_INFO(0, double_encode)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_get_html_translation_table, 0, 0, 0)
 	ZEND_ARG_INFO(0, table)
 	ZEND_ARG_INFO(0, quote_style)
+	ZEND_ARG_INFO(0, encoding)
 ZEND_END_ARG_INFO()
 
 /* }}} */
@@ -2942,6 +2946,7 @@ const zend_function_entry basic_functions[] = { /* {{{ */
 
 	PHP_FE(error_log,														arginfo_error_log)
 	PHP_FE(error_get_last,													arginfo_error_get_last)
+	PHP_FE(error_clear_last,													arginfo_error_clear_last)
 	PHP_FE(call_user_func,													arginfo_call_user_func)
 	PHP_FE(call_user_func_array,											arginfo_call_user_func_array)
 	PHP_FE(forward_static_call,											arginfo_forward_static_call)
@@ -3368,7 +3373,7 @@ zend_module_entry basic_functions_module = { /* {{{ */
 	PHP_RINIT(basic),			/* request startup */
 	PHP_RSHUTDOWN(basic),		/* request shutdown */
 	PHP_MINFO(basic),			/* extension info */
-	PHP_VERSION,				/* extension version */
+	PHP_STANDARD_VERSION,		/* extension version */
 	STANDARD_MODULE_PROPERTIES
 };
 /* }}} */
@@ -3379,13 +3384,13 @@ static void php_putenv_destructor(zval *zv) /* {{{ */
 	putenv_entry *pe = Z_PTR_P(zv);
 
 	if (pe->previous_value) {
-#if _MSC_VER >= 1300
-		/* VS.Net has a bug in putenv() when setting a variable that
+# if defined(PHP_WIN32)
+		/* MSVCRT has a bug in putenv() when setting a variable that
 		 * is already set; if the SetEnvironmentVariable() API call
 		 * fails, the Crt will double free() a string.
 		 * We try to avoid this by setting our own value first */
 		SetEnvironmentVariable(pe->key, "bugbug");
-#endif
+# endif
 		putenv(pe->previous_value);
 # if defined(PHP_WIN32)
 		efree(pe->previous_value);
@@ -3823,7 +3828,9 @@ PHP_FUNCTION(constant)
 	if (c) {
 		ZVAL_COPY_VALUE(return_value, c);
 		if (Z_CONSTANT_P(return_value)) {
-			zval_update_constant_ex(return_value, 1, NULL);
+			if (UNEXPECTED(zval_update_constant_ex(return_value, 1, NULL) != SUCCESS)) {
+				return;
+			}
 		}
 		zval_copy_ctor(return_value);
 	} else {
@@ -4384,6 +4391,10 @@ PHP_FUNCTION(getopt)
    Flush the output buffer */
 PHP_FUNCTION(flush)
 {
+	if (zend_parse_parameters_none() == FAILURE) {
+		return;
+	}
+
 	sapi_flush();
 }
 /* }}} */
@@ -4686,7 +4697,7 @@ PHPAPI int _php_error_log_ex(int opt_err, char *message, size_t message_len, cha
    Get the last occurred error as associative array. Returns NULL if there hasn't been an error yet. */
 PHP_FUNCTION(error_get_last)
 {
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "") == FAILURE) {
+	if (zend_parse_parameters_none() == FAILURE) {
 		return;
 	}
 
@@ -4696,6 +4707,29 @@ PHP_FUNCTION(error_get_last)
 		add_assoc_string_ex(return_value, "message", sizeof("message")-1, PG(last_error_message));
 		add_assoc_string_ex(return_value, "file", sizeof("file")-1, PG(last_error_file)?PG(last_error_file):"-");
 		add_assoc_long_ex(return_value, "line", sizeof("line")-1, PG(last_error_lineno));
+	}
+}
+/* }}} */
+
+/* {{{ proto void error_clear_last(void)
+   Clear the last occurred error. */
+PHP_FUNCTION(error_clear_last)
+{
+	if (zend_parse_parameters_none() == FAILURE) {
+		return;
+	}
+
+	if (PG(last_error_message)) {
+		PG(last_error_type) = 0;
+		PG(last_error_lineno) = 0;
+
+		free(PG(last_error_message));
+		PG(last_error_message) = NULL;
+
+		if (PG(last_error_file)) {
+			free(PG(last_error_file));
+			PG(last_error_file) = NULL;
+		}
 	}
 }
 /* }}} */
@@ -4766,6 +4800,7 @@ PHP_FUNCTION(forward_static_call)
 	zval retval;
 	zend_fcall_info fci;
 	zend_fcall_info_cache fci_cache;
+	zend_class_entry *called_scope;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "f*", &fci, &fci_cache, &fci.params, &fci.param_count) == FAILURE) {
 		return;
@@ -4777,9 +4812,10 @@ PHP_FUNCTION(forward_static_call)
 
 	fci.retval = &retval;
 
-	if (EX(called_scope) &&
-		instanceof_function(EX(called_scope), fci_cache.calling_scope)) {
-			fci_cache.called_scope = EX(called_scope);
+	called_scope = zend_get_called_scope(execute_data);
+	if (called_scope &&
+		instanceof_function(called_scope, fci_cache.calling_scope)) {
+			fci_cache.called_scope = called_scope;
 	}
 
 	if (zend_call_function(&fci, &fci_cache) == SUCCESS && Z_TYPE(retval) != IS_UNDEF) {
@@ -4795,6 +4831,7 @@ PHP_FUNCTION(forward_static_call_array)
 	zval *params, retval;
 	zend_fcall_info fci;
 	zend_fcall_info_cache fci_cache;
+	zend_class_entry *called_scope;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "fa/", &fci, &fci_cache, &params) == FAILURE) {
 		return;
@@ -4803,9 +4840,10 @@ PHP_FUNCTION(forward_static_call_array)
 	zend_fcall_info_args(&fci, params);
 	fci.retval = &retval;
 
-	if (EX(called_scope) &&
-		instanceof_function(EX(called_scope), fci_cache.calling_scope)) {
-			fci_cache.called_scope = EX(called_scope);
+	called_scope = zend_get_called_scope(execute_data);
+	if (called_scope &&
+		instanceof_function(called_scope, fci_cache.calling_scope)) {
+			fci_cache.called_scope = called_scope;
 	}
 
 	if (zend_call_function(&fci, &fci_cache) == SUCCESS && Z_TYPE(retval) != IS_UNDEF) {
@@ -5702,7 +5740,7 @@ PHP_FUNCTION(move_uploaded_file)
 		RETURN_FALSE;
 	}
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss", &path, &path_len, &new_path, &new_path_len) == FAILURE) {
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "sp", &path, &path_len, &new_path, &new_path_len) == FAILURE) {
 		return;
 	}
 

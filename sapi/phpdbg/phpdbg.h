@@ -1,6 +1,6 @@
 /*
    +----------------------------------------------------------------------+
-   | PHP Version 5                                                        |
+   | PHP Version 7                                                        |
    +----------------------------------------------------------------------+
    | Copyright (c) 1997-2015 The PHP Group                                |
    +----------------------------------------------------------------------+
@@ -33,7 +33,7 @@
 #	include <stdint.h>
 #	include <stddef.h>
 #else
-#	include "win32/php_stdint.h"
+#	include "main/php_stdint.h"
 #endif
 #include "php.h"
 #include "php_globals.h"
@@ -232,6 +232,8 @@ ZEND_BEGIN_MODULE_GLOBALS(phpdbg)
 	HashTable bp[PHPDBG_BREAK_TABLES];           /* break points */
 	HashTable registered;                        /* registered */
 	HashTable seek;                              /* seek oplines */
+	zend_execute_data *seek_ex;                  /* call frame of oplines to seek to */
+	zend_object *handled_exception;              /* last handled exception (prevent multiple handling of same exception) */
 	phpdbg_frame_t frame;                        /* frame */
 	uint32_t last_line;                          /* last executed line */
 
@@ -248,6 +250,7 @@ ZEND_BEGIN_MODULE_GLOBALS(phpdbg)
 	zend_llist watchlist_mem;                    /* triggered watchpoints */
 	zend_bool watchpoint_hit;                    /* a watchpoint was hit */
 	void (*original_free_function)(void *);      /* the original AG(mm_heap)->_free function */
+	phpdbg_watchpoint_t *watch_tmp;              /* temporary pointer for a watchpoint */
 
 	char *exec;                                  /* file to execute */
 	size_t exec_len;                             /* size of exec */

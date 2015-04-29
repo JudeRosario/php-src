@@ -261,7 +261,7 @@ CWD_API int php_sys_readlink(const char *link, char *target, size_t target_len){
 	}
 
 	dwRet = pGetFinalPathNameByHandle(hFile, target, MAXPATHLEN, VOLUME_NAME_DOS);
-	if(dwRet >= MAXPATHLEN) {
+	if(dwRet >= MAXPATHLEN || dwRet == 0) {
 		return -1;
 	}
 
@@ -1191,11 +1191,7 @@ CWD_API int virtual_file_ex(cwd_state *state, const char *path, verify_path_func
 
 	if (path_length == 0 || path_length >= MAXPATHLEN-1) {
 #ifdef TSRM_WIN32
-# if _MSC_VER < 1300
-		errno = EINVAL;
-# else
 		_set_errno(EINVAL);
-# endif
 #else
 		errno = EINVAL;
 #endif

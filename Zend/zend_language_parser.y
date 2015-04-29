@@ -67,6 +67,7 @@ static YYSIZE_T zend_yytnamerr(char*, const char*);
 %right T_PRINT
 %right T_YIELD
 %right T_DOUBLE_ARROW
+%right T_YIELD_FROM
 %left '=' T_PLUS_EQUAL T_MINUS_EQUAL T_MUL_EQUAL T_DIV_EQUAL T_CONCAT_EQUAL T_MOD_EQUAL T_AND_EQUAL T_OR_EQUAL T_XOR_EQUAL T_SL_EQUAL T_SR_EQUAL T_POW_EQUAL
 %left '?' ':'
 %right T_COALESCE
@@ -112,6 +113,7 @@ static YYSIZE_T zend_yytnamerr(char*, const char*);
 %token T_LOGICAL_AND  "and (T_LOGICAL_AND)"
 %token T_PRINT        "print (T_PRINT)"
 %token T_YIELD        "yield (T_YIELD)"
+%token T_YIELD_FROM   "yield from (T_YIELD_FROM)"
 %token T_PLUS_EQUAL   "+= (T_PLUS_EQUAL)"
 %token T_MINUS_EQUAL  "-= (T_MINUS_EQUAL)"
 %token T_MUL_EQUAL    "*= (T_MUL_EQUAL)"
@@ -226,16 +228,21 @@ static YYSIZE_T zend_yytnamerr(char*, const char*);
 %token T_POW             "** (T_POW)"
 %token T_POW_EQUAL       "**= (T_POW_EQUAL)"
 
+/* Token used to force a parse error from the lexer */
+%token T_ERROR
+
 %type <ast> top_statement namespace_name name statement function_declaration_statement
 %type <ast> class_declaration_statement trait_declaration_statement
 %type <ast> interface_declaration_statement interface_extends_list
-%type <ast> use_declaration const_decl inner_statement
+%type <ast> group_use_declaration inline_use_declarations inline_use_declaration
+%type <ast> mixed_group_use_declaration use_declaration const_decl inner_statement
 %type <ast> expr optional_expr while_statement for_statement foreach_variable
 %type <ast> foreach_statement declare_statement finally_statement unset_variable variable
 %type <ast> extends_from parameter optional_type argument expr_without_variable global_var
 %type <ast> static_var class_statement trait_adaptation trait_precedence trait_alias
 %type <ast> absolute_trait_method_reference trait_method_reference property echo_expr
-%type <ast> new_expr class_name class_name_reference simple_variable internal_functions_in_yacc
+%type <ast> new_expr anonymous_class class_name class_name_reference simple_variable
+%type <ast> internal_functions_in_yacc
 %type <ast> exit_expr scalar backticks_expr lexical_var function_call member_name
 %type <ast> variable_class_name dereferencable_scalar class_name_scalar constant dereferencable
 %type <ast> callable_expr callable_variable static_member new_variable
@@ -252,7 +259,7 @@ static YYSIZE_T zend_yytnamerr(char*, const char*);
 
 %type <num> returns_ref function is_reference is_variadic variable_modifiers
 %type <num> method_modifiers trait_modifiers non_empty_member_modifiers member_modifier
-%type <num> class_modifiers class_modifier
+%type <num> class_modifiers class_modifier use_type
 
 %type <str> backup_doc_comment
 
@@ -297,10 +304,38 @@ top_statement:
 	|	T_NAMESPACE { RESET_DOC_COMMENT(); }
 		'{' top_statement_list '}'
 			{ $$ = zend_ast_create(ZEND_AST_NAMESPACE, NULL, $4); }
-	|	T_USE use_declarations ';'				{ $$ = $2; $$->attr = T_CLASS; }
-	|	T_USE T_FUNCTION use_declarations ';'	{ $$ = $3; $$->attr = T_FUNCTION; }
-	|	T_USE T_CONST use_declarations ';'		{ $$ = $3; $$->attr = T_CONST; }
-	|	T_CONST const_list ';'					{ $$ = $2; }
+	|	T_USE mixed_group_use_declaration ';'		{ $$ = $2; }
+	|	T_USE use_type group_use_declaration ';'	{ $$ = $3; $$->attr = $2; }
+	|	T_USE use_declarations ';'					{ $$ = $2; $$->attr = T_CLASS; }
+	|	T_USE use_type use_declarations ';'			{ $$ = $3; $$->attr = $2; }
+	|	T_CONST const_list ';'						{ $$ = $2; }
+;
+
+use_type:
+	 	T_FUNCTION 		{ $$ = T_FUNCTION; }
+	| 	T_CONST 		{ $$ = T_CONST; }
+;
+
+group_use_declaration:
+	namespace_name T_NS_SEPARATOR '{' use_declarations '}'
+		{$$ = zend_ast_create(ZEND_AST_GROUP_USE, $1, $4); }
+;
+
+mixed_group_use_declaration:
+	namespace_name T_NS_SEPARATOR '{' inline_use_declarations '}'
+		{$$ = zend_ast_create(ZEND_AST_GROUP_USE, $1, $4);}
+;
+
+inline_use_declarations:
+		inline_use_declarations ',' inline_use_declaration
+			{ $$ = zend_ast_list_add($1, $3); }
+	|	inline_use_declaration
+			{ $$ = zend_ast_create_list(1, ZEND_AST_USE, $1); }
+;
+
+inline_use_declaration:
+		use_declaration { $$ = $1; $$->attr = T_CLASS; }
+	|	use_type use_declaration { $$ = $2; $$->attr = $1; }
 ;
 
 use_declarations:
@@ -764,9 +799,21 @@ non_empty_for_exprs:
 	|	expr { $$ = zend_ast_create_list(1, ZEND_AST_EXPR_LIST, $1); }
 ;
 
+anonymous_class:
+        T_CLASS { $<num>$ = CG(zend_lineno); } ctor_arguments
+		extends_from implements_list backup_doc_comment '{' class_statement_list '}' {
+			zend_ast *decl = zend_ast_create_decl(
+				ZEND_AST_CLASS, ZEND_ACC_ANON_CLASS, $<num>2, $6, NULL,
+				$4, $5, $8, NULL);
+			$$ = zend_ast_create(ZEND_AST_NEW, decl, $3);
+		}
+;
+
 new_expr:
 		T_NEW class_name_reference ctor_arguments
 			{ $$ = zend_ast_create(ZEND_AST_NEW, $2, $3); }
+	|	T_NEW anonymous_class
+			{ $$ = $2; }
 ;
 
 expr_without_variable:
@@ -875,6 +922,7 @@ expr_without_variable:
 	|	T_YIELD { $$ = zend_ast_create(ZEND_AST_YIELD, NULL, NULL); }
 	|	T_YIELD expr { $$ = zend_ast_create(ZEND_AST_YIELD, $2, NULL); }
 	|	T_YIELD expr T_DOUBLE_ARROW expr { $$ = zend_ast_create(ZEND_AST_YIELD, $4, $2); }
+	|	T_YIELD_FROM expr { $$ = zend_ast_create(ZEND_AST_YIELD_FROM, $2); }
 	|	function returns_ref '(' parameter_list ')' lexical_vars return_type
 		backup_doc_comment '{' inner_statement_list '}'
 			{ $$ = zend_ast_create_decl(ZEND_AST_CLOSURE, $2, $1, $8,
@@ -1198,7 +1246,7 @@ static YYSIZE_T zend_yytnamerr(char *yyres, const char *yystr)
 		return yystrlen(yystr);
 	}
 	{
-			if (CG(parse_error) == 0) {
+		if (CG(parse_error) == 0) {
 			char buffer[120];
 			const unsigned char *end, *str, *tok1 = NULL, *tok2 = NULL;
 			unsigned int len = 0, toklen = 0, yystr_len;
