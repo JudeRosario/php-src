@@ -29,6 +29,11 @@
     (Laruence)
   . Fixed bug #68252 (segfault in Zend/zend_hash.c in function
     _zend_hash_del_el). (Laruence)
+  . Fixed bug #65598 (Closure executed via static autoload incorrectly marked as
+    static). (Nikita)
+  . Fixed bug #66811 (Cannot access static::class in lambda, writen outside of a
+    class). (Nikita)
+  . Fixed bug #69568 (call a private function in closure failed). (Nikita)
   . Added PHP_INT_MIN constant. (Andrea)
   . Added Closure::call() method. (Andrea)
   . Implemented FR #38409 (parse_ini_file() looses the type of booleans). (Tjerk)
@@ -141,6 +146,8 @@
   . Removed mcrypt_ecb(), mcrypt_cbc(), mcrypt_cfb(), mcrypt_ofb(). (Nikita)
 
 - Opcache:
+  . Added experimental (disabled by default) file based opcode cache.
+    (Dmitry, Laruence, Anatol)
   . Fixed bug with try blocks being removed when extended_info opcode
     generation is turned on. (Laruence)
   . Fixed bug #68644 (strlen incorrect : mbstring + func_overload=2 +UTF-8
@@ -230,5 +237,10 @@
   . Added deflate_init(), deflate_add(), inflate_init(), inflate_add()
     functions allowing incremental/streaming compression/decompression.
     (Daniel Lowrey & Bob Weinand)
+
+- Zip:
+  . Added ZipArchive::setCompressionName and ZipArchive::setCompressionIndex
+    methods (Remi, Cedric Delmas)
+  . Update bundled libzip to 1.0.1 (Remi, Anatol)
 
 <<< NOTE: Insert NEWS from last stable release here prior to actual release! >>>
